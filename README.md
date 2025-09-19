@@ -1,2 +1,2 @@
-# Mini-Project---1
+# Mini Project-1
 Harvard's Artifacts Collection
