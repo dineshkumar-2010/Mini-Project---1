@@ -19,10 +19,12 @@ DEFAULT_FETCH_LIMIT = 2500
 # -----------------------
 # Session state defaults
 # -----------------------
-for key in ("meta_df", "media_df", "colors_df", "collected", "inserted", "show_choice", "migrate_click", "show_queries", "raw_data", "show_tables_after_insert", "combined_df"):
+for key in ("meta_df", "media_df", "colors_df", "collected", "inserted", "show_choice", "migrate_click", "show_queries", "raw_data", "show_tables_after_insert", "combined_meta_df", "combined_media_df", "combined_colors_df", "inserted_classifications"):
     if key not in st.session_state:
-        if key == "combined_df":
+        if key.startswith("combined_"):
             st.session_state[key] = pd.DataFrame()
+        elif key == "inserted_classifications":
+            st.session_state[key] = set()
         else:
             st.session_state[key] = False if key in ("collected", "inserted", "show_choice", "migrate_click", "show_queries", "show_tables_after_insert") else None
         if key == "raw_data":
@@ -202,7 +204,7 @@ QUERIES = {
     "8. Which artifacts have a higher colorcount than mediacount?":
         "SELECT m.title, a.colorcount, a.mediacount FROM artifact_media a JOIN artifact_metadata m ON m.id = a.object_id WHERE COALESCE(a.colorcount,0) > COALESCE(a.mediacount,0);",
     "9. List all artifacts created between 1500 and 1600":
-        "SELECT m.title, m.datedbegin, m.datedend FROM artifact_media a JOIN artifact_metadata m ON m.id = a.object_id WHERE m.datedbegin >= 1500 AND m.datedend <= 1600;",
+        "SELECT m.title, m.datedbegin, m.datedend FROM artifact_metadata m JOIN artifact_media a ON m.id = a.object_id WHERE m.datedbegin >= 1500 AND m.datedend <= 1600;",
     "10. How many artifacts have no media files?":
         "SELECT COUNT(*) AS no_media FROM artifact_media WHERE COALESCE(mediacount,0) = 0;",
     "11. What are all the distinct hues used in the dataset?":
@@ -267,22 +269,25 @@ with middle:
 with right:
     if st.button("Collect Data"):
         if classification:
-            with st.spinner("Fetching data..."):
-                try:
-                    meta_df, media_df, colors_df, raw_data = fetch_data(classification)
-                    st.session_state["meta_df"] = meta_df
-                    st.session_state["media_df"] = media_df
-                    st.session_state["colors_df"] = colors_df
-                    st.session_state["raw_data"] = raw_data
-                    st.session_state["collected"] = True
-                    st.session_state["inserted"] = False
-                    st.session_state["show_choice"] = True
-                    st.session_state["migrate_click"] = False
-                    st.session_state["show_queries"] = False
-                    st.session_state["show_tables_after_insert"] = False
-                    st.success(f"Collected {len(meta_df)} records for '{classification}'.")
-                except Exception as e:
-                    st.error(f"Failed to collect data: {e}")
+            if classification.lower() in st.session_state["inserted_classifications"]:
+                st.error(f"The classification '{classification}' has already been inserted!")
+            else:
+                with st.spinner("Fetching data..."):
+                    try:
+                        meta_df, media_df, colors_df, raw_data = fetch_data(classification)
+                        st.session_state["meta_df"] = meta_df
+                        st.session_state["media_df"] = media_df
+                        st.session_state["colors_df"] = colors_df
+                        st.session_state["raw_data"] = raw_data
+                        st.session_state["collected"] = True
+                        st.session_state["inserted"] = False
+                        st.session_state["show_choice"] = True
+                        st.session_state["migrate_click"] = False
+                        st.session_state["show_queries"] = False
+                        st.session_state["show_tables_after_insert"] = False
+                        st.success(f"Collected {len(meta_df)} records for '{classification}'.")
+                    except Exception as e:
+                        st.error(f"Failed to collect data: {e}")
         else:
             st.warning("Please enter a classification to begin.")
 
@@ -339,25 +344,37 @@ if st.session_state.get("migrate_click", False):
         st.warning("Please collect data first.")
     else:
         if st.button("Insert"):
-            try:
-                insert_frames(st.session_state["meta_df"], st.session_state["media_df"], st.session_state["colors_df"])
-                st.session_state["inserted"] = True
-                st.session_state["show_tables_after_insert"] = True
-                
-                # Combine the new data with the existing combined data
-                new_data_df = st.session_state["meta_df"]
-                st.session_state["combined_df"] = pd.concat([st.session_state["combined_df"], new_data_df], ignore_index=True).drop_duplicates(subset=["id"], keep="first")
-                
-                st.success("Data inserted into database successfully.")
-            except Exception as e:
-                st.error(f"Insert failed: {e}")
+            if classification.lower() in st.session_state["inserted_classifications"]:
+                st.error(f"The classification '{classification}' already exists!")
+            else:
+                try:
+                    insert_frames(st.session_state["meta_df"], st.session_state["media_df"], st.session_state["colors_df"])
+                    st.session_state["inserted"] = True
+                    st.session_state["show_tables_after_insert"] = True
+                    
+                    st.session_state["inserted_classifications"].add(classification.lower())
+                    
+                    st.session_state["combined_meta_df"] = pd.concat([st.session_state["combined_meta_df"], st.session_state["meta_df"]], ignore_index=True).drop_duplicates(subset=["id"], keep="first")
+                    st.session_state["combined_media_df"] = pd.concat([st.session_state["combined_media_df"], st.session_state["media_df"]], ignore_index=True).drop_duplicates(subset=["object_id"], keep="first")
+                    st.session_state["combined_colors_df"] = pd.concat([st.session_state["combined_colors_df"], st.session_state["colors_df"]], ignore_index=True).drop_duplicates(subset=["object_id", "hue"], keep="first")
+
+                    st.success("Data inserted into database successfully.")
+                except Exception as e:
+                    st.error(f"Insert failed: {e}")
 
 # -----------------------
 # Display the single combined table after each insert
 # -----------------------
 if st.session_state.get("show_tables_after_insert", False):
-    if not st.session_state["combined_df"].empty:
-        st.dataframe(st.session_state["combined_df"], use_container_width=True)
+    if not st.session_state["combined_meta_df"].empty:
+        st.markdown("### Artifacts Metadata")
+        st.dataframe(st.session_state["combined_meta_df"], use_container_width=True)
+
+        st.markdown("### Artifacts Media")
+        st.dataframe(st.session_state["combined_media_df"], use_container_width=True)
+
+        st.markdown("### Artifacts Colors")
+        st.dataframe(st.session_state["combined_colors_df"], use_container_width=True)
 
 # -----------------------
 # SQL Queries (25) - only run after insert
@@ -395,5 +412,4 @@ if st.session_state.get("show_queries", False):
                         st.dataframe(df_res, use_container_width=True)
                 except Exception as e:
                     st.error(f"Query failed: {e}")
-
                     
